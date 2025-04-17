@@ -6,16 +6,37 @@
                 "data": {
                     "name": "[%key:common::config_flow::data::name%]",
                     "mac": "[%key:common::config_flow::data::mac%]",
-                    "ip_address": "[%key:common::config_flow::data::ip_address%]",
-                    "mqtt_in": "[%key:common::config_flow::data::mqtt_in%]",
-                    "mqtt_out": "[%key:common::config_flow::data::mqtt_out%]"
+                    "client_mac": "Client MAC Address",
+                    "ip_address": "[%key:common::config_flow::data::ip_address%]"
+                },
+                "description": "Set up your Hisense TV. {mac_info}",
+                "description_placeholders": {
+                    "mac_info": "The TV MAC Address is required for Wake-on-LAN. The Client MAC Address is used for authentication and can be left empty to generate a random one."
                 }
             },
             "auth": {
                 "data": {
                     "pin": "[%key:common::config_flow::data::pin%]"
+                },
+                "error": {
+                    "invalid_pin": "The PIN you entered is invalid. Please try again.",
+                    "auth_timeout": "Authentication timed out. Make sure your TV is turned on and connected to the network.",
+                    "auth_failed": "Authentication failed. Please try again."
                 }
             }
+        },
+        "abort": {
+            "missing_certificates": "Certificate files not found. Please place vidaa_cert.cer and vidaa_cert.pkcs8 in your Home Assistant configuration directory.",
+            "connection_failed": "Failed to connect to the TV. Please check that the TV is powered on and connected to your network.",
+            "already_configured": "This Hisense TV is already configured."
+        },
+        "progress": {
+            "connect": "Connecting to TV, please wait...",
+            "auth_init": "Initializing connection to the TV...",
+            "auth_wait": "Waiting for TV to respond. Please check your TV screen for a PIN code.",
+            "auth_validate": "Validating PIN code...",
+            "auth_token": "Requesting authentication token...",
+            "auth_complete": "Authentication completed successfully!"
         }
     }
 }

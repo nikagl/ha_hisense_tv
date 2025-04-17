@@ -10,8 +10,17 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.const import CONF_IP_ADDRESS, CONF_MAC, CONF_NAME
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_MQTT_IN, CONF_MQTT_OUT, DEFAULT_NAME, DOMAIN
-from .helper import HisenseTvBase
+from .const import (
+    CONF_MQTT_IN,
+    CONF_MQTT_OUT,
+    DEFAULT_NAME,
+    DOMAIN,
+    CONF_USERNAME,
+    CONF_PASSWORD,
+    CONF_CLIENT_ID,
+    CONF_REFRESH_TOKEN,
+)
+from .helper import HisenseTvBase, HisenseTvMqttManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,12 +32,37 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     name = config_entry.data[CONF_NAME]
     mac = config_entry.data[CONF_MAC]
     ip_address = config_entry.data.get(CONF_IP_ADDRESS, BROADCAST_IP)
-    mqtt_in = config_entry.data[CONF_MQTT_IN]
-    mqtt_out = config_entry.data[CONF_MQTT_OUT]
+    mqtt_in = config_entry.data.get(CONF_MQTT_IN)
+    mqtt_out = config_entry.data.get(CONF_MQTT_OUT)
     uid = config_entry.unique_id
     if uid is None:
         uid = config_entry.entry_id
 
+    # Get authentication data
+    username = config_entry.data.get(CONF_USERNAME)
+    password = config_entry.data.get(CONF_PASSWORD)  # This is the access token
+    client_id = config_entry.data.get(CONF_CLIENT_ID)
+    refresh_token = config_entry.data.get(CONF_REFRESH_TOKEN)
+    
+    # Get the centralized MQTT manager 
+    mqtt_manager = None
+    if (DOMAIN in hass.data and 
+        "mqtt_managers" in hass.data[DOMAIN] and 
+        config_entry.entry_id in hass.data[DOMAIN]["mqtt_managers"]):
+        mqtt_manager = hass.data[DOMAIN]["mqtt_managers"][config_entry.entry_id]
+    
+    if mqtt_manager is None:
+        # If there's no manager yet (which shouldn't happen), create a new one
+        mqtt_manager = HisenseTvMqttManager(hass, config_entry)
+        
+        # Store it for future use
+        if DOMAIN not in hass.data:
+            hass.data[DOMAIN] = {}
+        if "mqtt_managers" not in hass.data[DOMAIN]:
+            hass.data[DOMAIN]["mqtt_managers"] = {}
+        hass.data[DOMAIN]["mqtt_managers"][config_entry.entry_id] = mqtt_manager
+
+    # Pass authentication data and MQTT manager to entity
     entity = HisenseTvSensor(
         hass=hass,
         name=name,
@@ -37,6 +71,12 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         mac=mac,
         uid=uid,
         ip_address=ip_address,
+        username=username,
+        password=password,
+        client_id=client_id,
+        refresh_token=refresh_token,
+        config_entry=config_entry,
+        mqtt_manager=mqtt_manager,
     )
     async_add_entities([entity])
 
@@ -44,7 +84,22 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class HisenseTvSensor(SensorEntity, HisenseTvBase):
     """Representation of a sensor that can be updated using MQTT."""
 
-    def __init__(self, hass, name, mqtt_in, mqtt_out, mac, uid, ip_address):
+    def __init__(
+        self,
+        hass,
+        name,
+        mqtt_in,
+        mqtt_out,
+        mac,
+        uid,
+        ip_address,
+        username,
+        password,
+        client_id,
+        refresh_token,
+        config_entry,
+        mqtt_manager=None,
+    ):
         HisenseTvBase.__init__(
             self=self,
             hass=hass,
@@ -54,6 +109,12 @@ class HisenseTvSensor(SensorEntity, HisenseTvBase):
             mac=mac,
             uid=uid,
             ip_address=ip_address,
+            username=username,
+            password=password,
+            client_id=client_id,
+            refresh_token=refresh_token,
+            config_entry=config_entry,
+            mqtt_manager=mqtt_manager,
         )
         self._is_available = False
         self._state = {}
@@ -65,33 +126,57 @@ class HisenseTvSensor(SensorEntity, HisenseTvBase):
             unsubscribe()
 
     async def async_added_to_hass(self):
-        self._subscriptions["tvsleep"] = await mqtt.async_subscribe(
-            self._hass,
-            self._in_topic(
-                "/remoteapp/mobile/broadcast/platform_service/actions/tvsleep"
-            ),
-            self._message_received_turnoff,
-        )
+        """Subscribe to MQTT events using the centralized manager."""
+        if self._mqtt_manager:
+            # Use the MQTT manager for all subscriptions
+            self._subscriptions["tvsleep"] = await self._mqtt_manager.subscribe(
+                "/remoteapp/mobile/broadcast/platform_service/actions/tvsleep",
+                self._message_received_turnoff
+            )
+            
+            self._subscriptions["state"] = await self._mqtt_manager.subscribe(
+                "/remoteapp/mobile/broadcast/ui_service/state",
+                self._message_received_turnon
+            )
+            
+            self._subscriptions["picturesettings"] = await self._mqtt_manager.subscribe(
+                f"/remoteapp/mobile/%s/platform_service/data/picturesetting",
+                self._message_received
+            )
+            
+            self._subscriptions["picturesettings_value"] = await self._mqtt_manager.subscribe(
+                "/remoteapp/mobile/broadcast/platform_service/data/picturesetting",
+                self._message_received_value
+            )
+        else:
+            # Fallback to direct MQTT subscriptions
+            self._subscriptions["tvsleep"] = await mqtt.async_subscribe(
+                self._hass,
+                self._in_topic(
+                    "/remoteapp/mobile/broadcast/platform_service/actions/tvsleep"
+                ),
+                self._message_received_turnoff,
+            )
 
-        self._subscriptions["state"] = await mqtt.async_subscribe(
-            self._hass,
-            self._in_topic("/remoteapp/mobile/broadcast/ui_service/state"),
-            self._message_received_turnon,
-        )
+            self._subscriptions["state"] = await mqtt.async_subscribe(
+                self._hass,
+                self._in_topic("/remoteapp/mobile/broadcast/ui_service/state"),
+                self._message_received_turnon,
+            )
 
-        self._subscriptions["picturesettings"] = await mqtt.async_subscribe(
-            self._hass,
-            self._in_topic("/remoteapp/mobile/%s/platform_service/data/picturesetting"),
-            self._message_received,
-        )
+            self._subscriptions["picturesettings"] = await mqtt.async_subscribe(
+                self._hass,
+                self._in_topic("/remoteapp/mobile/%s/platform_service/data/picturesetting"),
+                self._message_received,
+            )
 
-        self._subscriptions["picturesettings_value"] = await mqtt.async_subscribe(
-            self._hass,
-            self._in_topic(
-                "/remoteapp/mobile/broadcast/platform_service/data/picturesetting"
-            ),
-            self._message_received_value,
-        )
+            self._subscriptions["picturesettings_value"] = await mqtt.async_subscribe(
+                self._hass,
+                self._in_topic(
+                    "/remoteapp/mobile/broadcast/platform_service/data/picturesetting"
+                ),
+                self._message_received_value,
+            )
 
     async def _message_received_turnoff(self, msg):
         _LOGGER.debug("message_received_turnoff")
@@ -176,15 +261,23 @@ class HisenseTvSensor(SensorEntity, HisenseTvBase):
         _LOGGER.debug("Update. force=%s", self._force_trigger)
         self._force_trigger = False
         self._last_trigger = dt_util.utcnow()
-
-        await mqtt.async_publish(
-            hass=self._hass,
-            topic=self._out_topic(
-                "/remoteapp/tv/platform_service/%s/actions/picturesetting"
-            ),
-            payload='{"action": "get_menu_info"}',
-            retain=False,
-        )
+        
+        # Use the MQTT manager to publish the request if available
+        if self._mqtt_manager:
+            await self._mqtt_manager.publish(
+                "/remoteapp/tv/platform_service/%s/actions/picturesetting",
+                '{"action": "get_menu_info"}'
+            )
+        else:
+            # Fallback to direct MQTT publish
+            await mqtt.async_publish(
+                hass=self._hass,
+                topic=self._out_topic(
+                    "/remoteapp/tv/platform_service/%s/actions/picturesetting"
+                ),
+                payload='{"action": "get_menu_info"}',
+                retain=False,
+            )
 
     @property
     def device_info(self):
