@@ -1,3 +1,11 @@
+Hi all,
+
+I have discontinued this as Home Assistant now works with Homekit and the Homekit integration of the Hisense TV works sufficiently for me to turn on / off the TV and switch HDMI channels and such 👍
+
+![image](https://github.com/user-attachments/assets/1217f74a-a5c0-4852-9cde-4aa60bf565cb)
+
+
+
 # Hisense TV Integration for Home Assistant
 
 Integration an Hisense TV as media player into Home Assistant. The communication is handled via the integrated MQTT broker and wake-on-LAN.
